@@ -1,0 +1,619 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+  <title>Depth Parallax Viewer</title>
+  <style>
+    :root {
+      --bg: #0b1020;
+      --panel: rgba(18, 24, 45, 0.82);
+      --panel-border: rgba(255, 255, 255, 0.12);
+      --text: #eef2ff;
+      --muted: #a9b4d0;
+      --accent: #7aa2ff;
+      --danger: #ff8d8d;
+    }
+
+    * { box-sizing: border-box; }
+
+    html, body {
+      margin: 0;
+      width: 100%;
+      height: 100%;
+      overflow: hidden;
+      background: radial-gradient(circle at top, #18213d 0%, var(--bg) 52%, #050814 100%);
+      color: var(--text);
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    }
+
+    #app {
+      position: fixed;
+      inset: 0;
+    }
+
+    canvas {
+      display: block;
+      width: 100vw;
+      height: 100vh;
+      touch-action: none;
+      background: #000;
+    }
+
+    .hud {
+      position: fixed;
+      left: 12px;
+      right: 12px;
+      top: 12px;
+      display: grid;
+      gap: 10px;
+      z-index: 10;
+      pointer-events: none;
+    }
+
+    .panel {
+      pointer-events: auto;
+      background: var(--panel);
+      border: 1px solid var(--panel-border);
+      backdrop-filter: blur(14px);
+      border-radius: 18px;
+      padding: 14px;
+      box-shadow: 0 18px 50px rgba(0, 0, 0, 0.28);
+    }
+
+    .title {
+      font-size: 18px;
+      font-weight: 700;
+      margin-bottom: 6px;
+    }
+
+    .sub {
+      font-size: 13px;
+      color: var(--muted);
+      line-height: 1.5;
+    }
+
+    .grid {
+      display: grid;
+      gap: 10px;
+      grid-template-columns: 1fr;
+    }
+
+    .row {
+      display: grid;
+      gap: 8px;
+    }
+
+    .label {
+      font-size: 13px;
+      color: var(--muted);
+    }
+
+    input[type="range"] {
+      width: 100%;
+      accent-color: var(--accent);
+    }
+
+    input[type="file"] {
+      width: 100%;
+      color: var(--muted);
+      font-size: 13px;
+    }
+
+    .buttons {
+      display: flex;
+      gap: 8px;
+      flex-wrap: wrap;
+    }
+
+    button {
+      border: 1px solid rgba(255,255,255,0.14);
+      background: rgba(255,255,255,0.08);
+      color: var(--text);
+      border-radius: 14px;
+      padding: 10px 14px;
+      font-size: 14px;
+      font-weight: 600;
+      cursor: pointer;
+    }
+
+    button.primary {
+      background: linear-gradient(180deg, #7aa2ff, #5685ff);
+      color: white;
+      border-color: transparent;
+    }
+
+    button:disabled {
+      opacity: 0.5;
+      cursor: default;
+    }
+
+    .stats {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 8px;
+      font-size: 12px;
+      color: var(--muted);
+    }
+
+    .stat {
+      background: rgba(255,255,255,0.05);
+      border-radius: 12px;
+      padding: 8px 10px;
+    }
+
+    .footer {
+      position: fixed;
+      left: 12px;
+      right: 12px;
+      bottom: 12px;
+      z-index: 10;
+      pointer-events: none;
+    }
+
+    .footer .panel {
+      pointer-events: auto;
+      display: flex;
+      justify-content: space-between;
+      gap: 12px;
+      align-items: center;
+      flex-wrap: wrap;
+    }
+
+    .status {
+      font-size: 13px;
+      color: var(--muted);
+    }
+
+    .warn {
+      color: var(--danger);
+    }
+
+    .hide {
+      display: none;
+    }
+
+    @media (min-width: 900px) {
+      .hud {
+        right: auto;
+        width: 420px;
+      }
+    }
+  </style>
+</head>
+<body>
+  <div id="app">
+    <canvas id="canvas"></canvas>
+
+    <div class="hud">
+      <div class="panel">
+        <div class="title">Depth Parallax Viewer</div>
+        <div class="sub">
+          元画像と depth map を読み込み、スマホの傾きで 3D っぽく見せます。<br>
+          白が近い depth map を前提にしています。逆なら「Depth反転」をオンにしてください。
+        </div>
+      </div>
+
+      <div class="panel grid">
+        <div class="row">
+          <div class="label">元画像</div>
+          <input id="imageInput" type="file" accept="image/png,image/jpeg,image/webp" />
+        </div>
+
+        <div class="row">
+          <div class="label">Depth map</div>
+          <input id="depthInput" type="file" accept="image/png,image/jpeg,image/webp" />
+        </div>
+
+        <div class="buttons">
+          <button id="permissionBtn" class="primary">傾き許可を有効化</button>
+          <button id="resetBtn">センター再調整</button>
+          <button id="invertBtn">Depth反転: OFF</button>
+        </div>
+
+        <div class="row">
+          <div class="label">強さ <span id="strengthValue">22</span></div>
+          <input id="strength" type="range" min="0" max="60" step="1" value="22" />
+        </div>
+
+        <div class="row">
+          <div class="label">なめらかさ <span id="smoothValue">0.10</span></div>
+          <input id="smooth" type="range" min="0.02" max="0.30" step="0.01" value="0.10" />
+        </div>
+
+        <div class="row">
+          <div class="label">ズーム <span id="zoomValue">1.08</span></div>
+          <input id="zoom" type="range" min="1.00" max="1.30" step="0.01" value="1.08" />
+        </div>
+
+        <div class="stats">
+          <div class="stat">gamma: <span id="gammaStat">0.00</span></div>
+          <div class="stat">beta: <span id="betaStat">0.00</span></div>
+          <div class="stat">tiltX: <span id="tiltXStat">0.00</span></div>
+          <div class="stat">tiltY: <span id="tiltYStat">0.00</span></div>
+        </div>
+      </div>
+    </div>
+
+    <div class="footer">
+      <div class="panel">
+        <div class="status" id="status">画像と depth map を選択してください。</div>
+        <div class="status" id="hint">iPhone はボタンから傾き許可が必要です。</div>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    const canvas = document.getElementById('canvas');
+    const ctx = canvas.getContext('2d', { willReadFrequently: true });
+
+    const imageInput = document.getElementById('imageInput');
+    const depthInput = document.getElementById('depthInput');
+    const permissionBtn = document.getElementById('permissionBtn');
+    const resetBtn = document.getElementById('resetBtn');
+    const invertBtn = document.getElementById('invertBtn');
+    const strengthEl = document.getElementById('strength');
+    const smoothEl = document.getElementById('smooth');
+    const zoomEl = document.getElementById('zoom');
+
+    const strengthValue = document.getElementById('strengthValue');
+    const smoothValue = document.getElementById('smoothValue');
+    const zoomValue = document.getElementById('zoomValue');
+
+    const gammaStat = document.getElementById('gammaStat');
+    const betaStat = document.getElementById('betaStat');
+    const tiltXStat = document.getElementById('tiltXStat');
+    const tiltYStat = document.getElementById('tiltYStat');
+    const statusEl = document.getElementById('status');
+    const hintEl = document.getElementById('hint');
+
+    let baseImage = null;
+    let depthImage = null;
+
+    let sourceCanvas = null;
+    let sourceCtx = null;
+    let sourceData = null;
+
+    let depthCanvas = null;
+    let depthCtx = null;
+    let depthData = null;
+
+    let loadedWidth = 0;
+    let loadedHeight = 0;
+
+    let invertDepth = false;
+
+    let rawGamma = 0;
+    let rawBeta = 0;
+    let baselineGamma = 0;
+    let baselineBeta = 0;
+
+    let targetTiltX = 0;
+    let targetTiltY = 0;
+    let currentTiltX = 0;
+    let currentTiltY = 0;
+
+    const clamp = (v, min, max) => Math.max(min, Math.min(max, v));
+
+    function setStatus(msg, warn = false) {
+      statusEl.textContent = msg;
+      statusEl.classList.toggle('warn', warn);
+    }
+
+    function resizeCanvas() {
+      const dpr = window.devicePixelRatio || 1;
+      const w = Math.max(1, Math.floor(window.innerWidth * dpr));
+      const h = Math.max(1, Math.floor(window.innerHeight * dpr));
+      if (canvas.width !== w || canvas.height !== h) {
+        canvas.width = w;
+        canvas.height = h;
+      }
+    }
+
+    function updateLabels() {
+      strengthValue.textContent = strengthEl.value;
+      smoothValue.textContent = Number(smoothEl.value).toFixed(2);
+      zoomValue.textContent = Number(zoomEl.value).toFixed(2);
+      invertBtn.textContent = `Depth反転: ${invertDepth ? 'ON' : 'OFF'}`;
+    }
+
+    function createOffscreenFromImage(img) {
+      const c = document.createElement('canvas');
+      c.width = img.naturalWidth || img.width;
+      c.height = img.naturalHeight || img.height;
+      const cctx = c.getContext('2d', { willReadFrequently: true });
+      cctx.drawImage(img, 0, 0, c.width, c.height);
+      return [c, cctx];
+    }
+
+    function prepareBuffers() {
+      if (!baseImage || !depthImage) return;
+
+      loadedWidth = baseImage.naturalWidth || baseImage.width;
+      loadedHeight = baseImage.naturalHeight || baseImage.height;
+
+      [sourceCanvas, sourceCtx] = createOffscreenFromImage(baseImage);
+      [depthCanvas, depthCtx] = createOffscreenFromImage(depthImage);
+
+      if (depthCanvas.width !== loadedWidth || depthCanvas.height !== loadedHeight) {
+        const resized = document.createElement('canvas');
+        resized.width = loadedWidth;
+        resized.height = loadedHeight;
+        const rctx = resized.getContext('2d', { willReadFrequently: true });
+        rctx.drawImage(depthCanvas, 0, 0, resized.width, resized.height);
+        depthCanvas = resized;
+        depthCtx = rctx;
+      }
+
+      sourceData = sourceCtx.getImageData(0, 0, loadedWidth, loadedHeight);
+      depthData = depthCtx.getImageData(0, 0, loadedWidth, loadedHeight);
+
+      setStatus(`準備完了: ${loadedWidth}×${loadedHeight}`);
+    }
+
+    function fileToImage(file) {
+      return new Promise((resolve, reject) => {
+        const url = URL.createObjectURL(file);
+        const img = new Image();
+        img.onload = () => {
+          URL.revokeObjectURL(url);
+          resolve(img);
+        };
+        img.onerror = (e) => {
+          URL.revokeObjectURL(url);
+          reject(e);
+        };
+        img.src = url;
+      });
+    }
+
+    async function handleImageInput(input, setter, label) {
+      const file = input.files?.[0];
+      if (!file) return;
+      try {
+        setStatus(`${label} を読み込み中...`);
+        const img = await fileToImage(file);
+        setter(img);
+        if (baseImage && depthImage) prepareBuffers();
+      } catch (e) {
+        console.error(e);
+        setStatus(`${label} の読み込みに失敗しました。`, true);
+      }
+    }
+
+    imageInput.addEventListener('change', () => handleImageInput(imageInput, (img) => baseImage = img, '元画像'));
+    depthInput.addEventListener('change', () => handleImageInput(depthInput, (img) => depthImage = img, 'Depth map'));
+
+    invertBtn.addEventListener('click', () => {
+      invertDepth = !invertDepth;
+      updateLabels();
+    });
+
+    resetBtn.addEventListener('click', () => {
+      baselineGamma = rawGamma;
+      baselineBeta = rawBeta;
+      setStatus('現在の傾きを中心として再調整しました。');
+    });
+
+    [strengthEl, smoothEl, zoomEl].forEach(el => el.addEventListener('input', updateLabels));
+    updateLabels();
+
+    function onOrientation(event) {
+      rawGamma = Number.isFinite(event.gamma) ? event.gamma : 0;
+      rawBeta = Number.isFinite(event.beta) ? event.beta : 0;
+
+      const deltaGamma = rawGamma - baselineGamma;
+      const deltaBeta = rawBeta - baselineBeta;
+
+      targetTiltX = clamp(deltaGamma / 30, -1.5, 1.5);
+      targetTiltY = clamp(deltaBeta / 30, -1.5, 1.5);
+
+      gammaStat.textContent = rawGamma.toFixed(2);
+      betaStat.textContent = rawBeta.toFixed(2);
+    }
+
+    async function enableOrientation() {
+      try {
+        if (typeof DeviceOrientationEvent !== 'undefined' && typeof DeviceOrientationEvent.requestPermission === 'function') {
+          const result = await DeviceOrientationEvent.requestPermission();
+          if (result !== 'granted') {
+            setStatus('傾きセンサーの許可が拒否されました。', true);
+            return;
+          }
+        }
+
+        window.addEventListener('deviceorientation', onOrientation, true);
+        permissionBtn.disabled = true;
+        permissionBtn.textContent = '傾き許可済み';
+        hintEl.textContent = 'スマホをゆっくり傾けて効果を確認してください。';
+        setStatus('傾きセンサーを有効化しました。');
+      } catch (e) {
+        console.error(e);
+        setStatus('傾きセンサーの有効化に失敗しました。', true);
+      }
+    }
+
+    permissionBtn.addEventListener('click', enableOrientation);
+
+    function drawFallbackMessage() {
+      ctx.save();
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+      ctx.fillStyle = '#090d18';
+      ctx.fillRect(0, 0, canvas.width, canvas.height);
+      ctx.fillStyle = 'rgba(255,255,255,0.92)';
+      ctx.textAlign = 'center';
+      ctx.font = `${Math.max(18, Math.floor(canvas.width * 0.018))}px sans-serif`;
+      ctx.fillText('元画像と depth map を読み込むとここに表示されます', canvas.width / 2, canvas.height / 2);
+      ctx.restore();
+    }
+
+    function renderParallax() {
+      if (!sourceData || !depthData) {
+        drawFallbackMessage();
+        return;
+      }
+
+      const smooth = Number(smoothEl.value);
+      currentTiltX += (targetTiltX - currentTiltX) * smooth;
+      currentTiltY += (targetTiltY - currentTiltY) * smooth;
+
+      tiltXStat.textContent = currentTiltX.toFixed(2);
+      tiltYStat.textContent = currentTiltY.toFixed(2);
+
+      const strength = Number(strengthEl.value);
+      const zoom = Number(zoomEl.value);
+
+      const out = ctx.createImageData(loadedWidth, loadedHeight);
+      const src = sourceData.data;
+      const dep = depthData.data;
+      const dst = out.data;
+
+      for (let y = 0; y < loadedHeight; y++) {
+        for (let x = 0; x < loadedWidth; x++) {
+          const i = (y * loadedWidth + x) * 4;
+          let d = dep[i] / 255;
+          if (invertDepth) d = 1 - d;
+
+          const shiftX = currentTiltX * d * strength;
+          const shiftY = currentTiltY * d * strength;
+
+          const sx = clamp(Math.round(x - shiftX), 0, loadedWidth - 1);
+          const sy = clamp(Math.round(y - shiftY), 0, loadedHeight - 1);
+          const si = (sy * loadedWidth + sx) * 4;
+
+          dst[i] = src[si];
+          dst[i + 1] = src[si + 1];
+          dst[i + 2] = src[si + 2];
+          dst[i + 3] = 255;
+        }
+      }
+
+      const renderCanvas = document.createElement('canvas');
+      renderCanvas.width = loadedWidth;
+      renderCanvas.height = loadedHeight;
+      const rctx = renderCanvas.getContext('2d');
+      rctx.putImageData(out, 0, 0);
+
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+      const viewW = canvas.width;
+      const viewH = canvas.height;
+      const scale = Math.max(viewW / loadedWidth, viewH / loadedHeight) * zoom;
+      const drawW = loadedWidth * scale;
+      const drawH = loadedHeight * scale;
+      const dx = (viewW - drawW) / 2;
+      const dy = (viewH - drawH) / 2;
+
+      ctx.imageSmoothingEnabled = true;
+      ctx.drawImage(renderCanvas, dx, dy, drawW, drawH);
+    }
+
+    function loop() {
+      resizeCanvas();
+      renderParallax();
+      requestAnimationFrame(loop);
+    }
+
+    loop();
+
+    // デモ用の簡易初期画像を自動生成
+    function createDemoAssets() {
+      const w = 900;
+      const h = 1200;
+
+      const imgC = document.createElement('canvas');
+      imgC.width = w;
+      imgC.height = h;
+      const ictx = imgC.getContext('2d');
+
+      const g = ictx.createLinearGradient(0, 0, 0, h);
+      g.addColorStop(0, '#7eb6ff');
+      g.addColorStop(0.6, '#a7d4ff');
+      g.addColorStop(1, '#eff6ff');
+      ictx.fillStyle = g;
+      ictx.fillRect(0, 0, w, h);
+
+      ictx.fillStyle = '#d2e6ff';
+      ictx.beginPath();
+      ictx.arc(760, 180, 90, 0, Math.PI * 2);
+      ictx.fill();
+
+      ictx.fillStyle = '#88b36b';
+      ictx.fillRect(0, h * 0.72, w, h * 0.28);
+
+      ictx.fillStyle = '#6f7d8f';
+      ictx.beginPath();
+      ictx.moveTo(0, h * 0.84);
+      ictx.lineTo(w * 0.40, h * 0.62);
+      ictx.lineTo(w * 0.58, h * 0.62);
+      ictx.lineTo(w, h * 0.84);
+      ictx.lineTo(w, h);
+      ictx.lineTo(0, h);
+      ictx.closePath();
+      ictx.fill();
+
+      ictx.fillStyle = '#ffffff';
+      ictx.fillRect(160, 280, 220, 280);
+      ictx.fillStyle = '#2f3b52';
+      ictx.beginPath();
+      ictx.arc(270, 225, 90, 0, Math.PI * 2);
+      ictx.fill();
+      ictx.fillRect(225, 520, 40, 250);
+      ictx.fillRect(285, 520, 40, 250);
+      ictx.fillRect(170, 340, 60, 200);
+      ictx.fillRect(310, 340, 60, 200);
+
+      const depthC = document.createElement('canvas');
+      depthC.width = w;
+      depthC.height = h;
+      const dctx = depthC.getContext('2d');
+
+      const dg = dctx.createLinearGradient(0, 0, 0, h);
+      dg.addColorStop(0, '#222');
+      dg.addColorStop(1, '#999');
+      dctx.fillStyle = dg;
+      dctx.fillRect(0, 0, w, h);
+
+      dctx.fillStyle = '#dddddd';
+      dctx.beginPath();
+      dctx.moveTo(0, h * 0.84);
+      dctx.lineTo(w * 0.40, h * 0.62);
+      dctx.lineTo(w * 0.58, h * 0.62);
+      dctx.lineTo(w, h * 0.84);
+      dctx.lineTo(w, h);
+      dctx.lineTo(0, h);
+      dctx.closePath();
+      dctx.fill();
+
+      dctx.fillStyle = '#ffffff';
+      dctx.beginPath();
+      dctx.arc(270, 225, 90, 0, Math.PI * 2);
+      dctx.fill();
+      dctx.fillRect(160, 280, 220, 280);
+      dctx.fillRect(170, 340, 60, 200);
+      dctx.fillRect(310, 340, 60, 200);
+      dctx.fillRect(225, 520, 40, 250);
+      dctx.fillRect(285, 520, 40, 250);
+
+      const img = new Image();
+      const dep = new Image();
+      img.src = imgC.toDataURL('image/png');
+      dep.src = depthC.toDataURL('image/png');
+
+      Promise.all([
+        new Promise(resolve => img.onload = resolve),
+        new Promise(resolve => dep.onload = resolve)
+      ]).then(() => {
+        if (!baseImage && !depthImage) {
+          baseImage = img;
+          depthImage = dep;
+          prepareBuffers();
+          setStatus('デモ画像を表示中です。実画像を読み込むと置き換わります。');
+        }
+      });
+    }
+
+    createDemoAssets();
+  </script>
+</body>
+</html>
