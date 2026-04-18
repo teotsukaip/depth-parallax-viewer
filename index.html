@@ -171,7 +171,7 @@
     <div class="panel">
       <div class="title">Gyro Depth 3D Viewer - WebGL</div>
       <div class="sub">
-        同じフォルダにある <b>IMG_8098.PNG</b> と <b>depth.png</b> を自動読み込みします。<br>
+        同じフォルダから <b>input.jpg</b>（なければ <b>IMG_8098.PNG</b>）と <b>depth.png</b> を自動読み込みします。<br>
         WebGLでGPU描画するので、Canvas版より軽くて滑らかです。白が近い depth map 前提です。<br>
         <span style="opacity:0.92">奥行きが画像に追従しないときは、<b>MiDas.py</b> を表示中のカラーと同じ画像から実行し直すか、深度の解像度がカラーと違う場合は自動でリサンプルされます。</span>
       </div>
@@ -211,13 +211,13 @@
 
   <div class="footer">
     <div class="panel">
-      <div class="status" id="status">IMG_8098.PNG / depth.png を読み込み中...</div>
+      <div class="status" id="status">画像 / depth.png を読み込み中...</div>
       <div class="status" id="hint">iPhone は最初に傾き許可が必要です。</div>
     </div>
   </div>
 
   <script>
-    const IMAGE_FILE = 'IMG_8098.PNG';
+    const IMAGE_CANDIDATES = ['input.jpg', 'IMG_8098.PNG'];
     const DEPTH_FILE = 'depth.png';
 
     const canvas = document.getElementById('glcanvas');
@@ -421,6 +421,18 @@
       });
     }
 
+    async function loadFirstExistingImage(candidates) {
+      for (const src of candidates) {
+        try {
+          const img = await loadImage(src);
+          return { src, img };
+        } catch {
+          /* try next */
+        }
+      }
+      throw new Error(`no image (${candidates.join(', ')})`);
+    }
+
     /** depth をカラーと同じピクセル格子に揃えないと、同じ UV で読んだときに奥行きが画像に追従しません */
     function resampleDepthToMatchColor(depthImg, targetW, targetH) {
       const sw = depthImg.naturalWidth || depthImg.width;
@@ -443,10 +455,8 @@
 
     async function loadDefaultFiles() {
       try {
-        const [img, dep] = await Promise.all([
-          loadImage(IMAGE_FILE),
-          loadImage(DEPTH_FILE)
-        ]);
+        const { src: imageFile, img } = await loadFirstExistingImage(IMAGE_CANDIDATES);
+        const dep = await loadImage(DEPTH_FILE);
 
         const imgW = img.naturalWidth || img.width;
         const imgH = img.naturalHeight || img.height;
@@ -467,11 +477,14 @@
         const alignNote = resampled
           ? '（depth をカラー解像度に合わせてリサンプル）'
           : '';
-        setStatus(`準備完了: ${IMAGE_FILE} / ${DEPTH_FILE} (${imgW}×${imgH})${alignNote}`);
+        setStatus(`準備完了: ${imageFile} / ${DEPTH_FILE} (${imgW}×${imgH})${alignNote}`);
       } catch (e) {
         console.error(e);
-        setStatus(`読み込み失敗: ${IMAGE_FILE} または ${DEPTH_FILE} が見つかりません`, true);
-        hintEl.textContent = 'index.html と同じフォルダに 2ファイルを置いてください。';
+        setStatus(
+          `読み込み失敗: ${IMAGE_CANDIDATES.join(' または ')} と ${DEPTH_FILE} を同じフォルダに置いてください`,
+          true
+        );
+        hintEl.textContent = 'MiDas.py で depth.png を、表示しているカラー画像から作り直すと奥行きが一致します。';
       }
     }
 

@@ -2,8 +2,8 @@ import torch
 import cv2
 from pathlib import Path
 
-# index.html と同じ表示用画像から深度を作る（input.jpg だけだとビューアとズレます）
-IMAGE_CANDIDATES = [Path("IMG_8098.PNG"), Path("input.jpg")]
+# index.html / index2.html と同じ優先順（先に見つかったファイルで depth.png を作る）
+IMAGE_CANDIDATES = [Path("input.jpg"), Path("IMG_8098.PNG")]
 image_path = next((p for p in IMAGE_CANDIDATES if p.exists()), IMAGE_CANDIDATES[0])
 
 model_type = "DPT_Large"  # 重いのでMacならMiDaS_small推奨
