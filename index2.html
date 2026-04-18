@@ -178,7 +178,7 @@
 
     <div class="panel">
       <div class="buttons">
-        <button id="toggleUIBtn">メニュー非表示</button>
+        <button type="button" id="toggleUIBtn">メニューを消す</button>
         <button id="permissionBtn" class="primary">傾き許可を有効化</button>
         <button id="resetBtn">センター再調整</button>
         <button id="invertBtn">Depth反転: OFF</button>
@@ -507,20 +507,35 @@
       el.addEventListener('input', updateLabels);
     });
 
-    canvas.addEventListener('click', () => {
+    const hudEl = document.querySelector('.hud');
+    const footerEl = document.querySelector('.footer');
+
+    function showMenu() {
+      hudEl.style.removeProperty('display');
+      footerEl.style.removeProperty('display');
+      uiVisible = true;
+      toggleUIBtn.textContent = 'メニューを消す';
+    }
+
+    function hideMenu() {
+      hudEl.style.setProperty('display', 'none', 'important');
+      footerEl.style.setProperty('display', 'none', 'important');
+      uiVisible = false;
+    }
+
+    /** メニュー非表示中は、マウス・タッチで画像を押すとメニュー復帰 */
+    function onCanvasPointerRestore() {
       if (!uiVisible) {
-        document.querySelector('.hud').style.display = 'grid';
-        document.querySelector('.footer').style.display = 'block';
-        uiVisible = true;
-        toggleUIBtn.textContent = 'メニュー非表示';
+        showMenu();
       }
-    });
+    }
+
+    canvas.addEventListener('pointerdown', onCanvasPointerRestore);
+    canvas.addEventListener('click', onCanvasPointerRestore);
 
     toggleUIBtn.addEventListener('click', (e) => {
       e.stopPropagation();
-      document.querySelector('.hud').style.setProperty('display', 'none', 'important');
-      document.querySelector('.footer').style.setProperty('display', 'none', 'important');
-      uiVisible = false;
+      hideMenu();
     });
 
     function renderFrame() {
