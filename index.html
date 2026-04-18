@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
-  <title>Gyro Depth 3D Viewer</title>
+  <title>Gyro Depth 3D Viewer - WebGL</title>
   <style>
     :root {
       --bg: #0b1020;
@@ -161,30 +161,32 @@
         width: 420px;
       }
     }
+  
   </style>
 </head>
 <body>
-  <canvas id="canvas"></canvas>
+  <canvas id="glcanvas"></canvas>
 
   <div class="hud">
     <div class="panel">
-      <div class="title">Gyro Depth 3D Viewer</div>
+      <div class="title">Gyro Depth 3D Viewer - WebGL</div>
       <div class="sub">
         同じフォルダにある <b>IMG_8098.PNG</b> と <b>depth.png</b> を自動読み込みします。<br>
-        白が近い depth map を前提にしています。逆の場合は「Depth反転」を押してください。
+        WebGLでGPU描画するので、Canvas版より軽くて滑らかです。白が近い depth map 前提です。
       </div>
     </div>
 
     <div class="panel">
       <div class="buttons">
+        <button id="toggleUIBtn">メニュー非表示</button>
         <button id="permissionBtn" class="primary">傾き許可を有効化</button>
         <button id="resetBtn">センター再調整</button>
         <button id="invertBtn">Depth反転: OFF</button>
       </div>
 
       <div class="row">
-        <div class="label">強さ <span id="strengthValue">22</span></div>
-        <input id="strength" type="range" min="0" max="60" step="1" value="22" />
+        <div class="label">強さ <span id="strengthValue">0.035</span></div>
+        <input id="strength" type="range" min="0.000" max="0.120" step="0.001" value="0.035" />
       </div>
 
       <div class="row">
@@ -193,8 +195,8 @@
       </div>
 
       <div class="row">
-        <div class="label">ズーム <span id="zoomValue">1.08</span></div>
-        <input id="zoom" type="range" min="1.00" max="1.30" step="0.01" value="1.08" />
+        <div class="label">ズーム <span id="zoomValue">1.06</span></div>
+        <input id="zoom" type="range" min="1.00" max="1.25" step="0.01" value="1.06" />
       </div>
 
       <div class="stats">
@@ -214,112 +216,198 @@
   </div>
 
   <script>
-    const IMAGE_FILE = "IMG_8098.PNG";
-    const DEPTH_FILE = "depth.png";
+    const IMAGE_FILE = 'IMG_8098.PNG';
+    const DEPTH_FILE = 'depth.png';
 
-    const canvas = document.getElementById("canvas");
-    const ctx = canvas.getContext("2d", { willReadFrequently: true });
+    const canvas = document.getElementById('glcanvas');
+    const permissionBtn = document.getElementById('permissionBtn');
+    const toggleUIBtn = document.getElementById('toggleUIBtn');
+    const resetBtn = document.getElementById('resetBtn');
+    const invertBtn = document.getElementById('invertBtn');
+    const strengthEl = document.getElementById('strength');
+    const smoothEl = document.getElementById('smooth');
+    const zoomEl = document.getElementById('zoom');
 
-    const permissionBtn = document.getElementById("permissionBtn");
-    const resetBtn = document.getElementById("resetBtn");
-    const invertBtn = document.getElementById("invertBtn");
-    const strengthEl = document.getElementById("strength");
-    const smoothEl = document.getElementById("smooth");
-    const zoomEl = document.getElementById("zoom");
+    const strengthValue = document.getElementById('strengthValue');
+    const smoothValue = document.getElementById('smoothValue');
+    const zoomValue = document.getElementById('zoomValue');
 
-    const strengthValue = document.getElementById("strengthValue");
-    const smoothValue = document.getElementById("smoothValue");
-    const zoomValue = document.getElementById("zoomValue");
+    const gammaStat = document.getElementById('gammaStat');
+    const betaStat = document.getElementById('betaStat');
+    const tiltXStat = document.getElementById('tiltXStat');
+    const tiltYStat = document.getElementById('tiltYStat');
+    const statusEl = document.getElementById('status');
+    const hintEl = document.getElementById('hint');
 
-    const gammaStat = document.getElementById("gammaStat");
-    const betaStat = document.getElementById("betaStat");
-    const tiltXStat = document.getElementById("tiltXStat");
-    const tiltYStat = document.getElementById("tiltYStat");
-    const statusEl = document.getElementById("status");
-    const hintEl = document.getElementById("hint");
+    const gl = canvas.getContext('webgl', {
+      antialias: true,
+      alpha: false,
+      preserveDrawingBuffer: false,
+      premultipliedAlpha: false
+    });
 
-    let baseImage = null;
-    let depthImage = null;
-
-    let sourceCanvas = null;
-    let sourceCtx = null;
-    let sourceData = null;
-
-    let depthCanvas = null;
-    let depthCtx = null;
-    let depthData = null;
-
-    let loadedWidth = 0;
-    let loadedHeight = 0;
+    if (!gl) {
+      statusEl.textContent = 'WebGLが使えません。Safari/Chromeで開いてください。';
+      statusEl.classList.add('warn');
+      throw new Error('WebGL not supported');
+    }
 
     let invertDepth = false;
-
+    let uiVisible = true;
     let rawGamma = 0;
     let rawBeta = 0;
     let baselineGamma = 0;
     let baselineBeta = 0;
-
     let targetTiltX = 0;
     let targetTiltY = 0;
     let currentTiltX = 0;
     let currentTiltY = 0;
 
+    let imageInfo = null;
+    let depthInfo = null;
+
     const clamp = (v, min, max) => Math.max(min, Math.min(max, v));
 
     function setStatus(msg, warn = false) {
       statusEl.textContent = msg;
-      statusEl.classList.toggle("warn", warn);
-    }
-
-    function resizeCanvas() {
-      const dpr = window.devicePixelRatio || 1;
-      const w = Math.max(1, Math.floor(window.innerWidth * dpr));
-      const h = Math.max(1, Math.floor(window.innerHeight * dpr));
-      if (canvas.width !== w || canvas.height !== h) {
-        canvas.width = w;
-        canvas.height = h;
-      }
+      statusEl.classList.toggle('warn', warn);
     }
 
     function updateLabels() {
-      strengthValue.textContent = strengthEl.value;
+      strengthValue.textContent = Number(strengthEl.value).toFixed(3);
       smoothValue.textContent = Number(smoothEl.value).toFixed(2);
       zoomValue.textContent = Number(zoomEl.value).toFixed(2);
-      invertBtn.textContent = `Depth反転: ${invertDepth ? "ON" : "OFF"}`;
+      invertBtn.textContent = `Depth反転: ${invertDepth ? 'ON' : 'OFF'}`;
     }
 
-    function createOffscreenFromImage(img) {
-      const c = document.createElement("canvas");
-      c.width = img.naturalWidth || img.width;
-      c.height = img.naturalHeight || img.height;
-      const cctx = c.getContext("2d", { willReadFrequently: true });
-      cctx.drawImage(img, 0, 0, c.width, c.height);
-      return [c, cctx];
-    }
+    const vertexSource = `
+      attribute vec2 a_position;
+      varying vec2 v_uv;
+      void main() {
+        v_uv = a_position * 0.5 + 0.5;
+        gl_Position = vec4(a_position, 0.0, 1.0);
+      }
+    `;
 
-    function prepareBuffers() {
-      if (!baseImage || !depthImage) return;
+    const fragmentSource = `
+      precision mediump float;
+      varying vec2 v_uv;
+      uniform sampler2D u_image;
+      uniform sampler2D u_depth;
+      uniform vec2 u_tilt;
+      uniform float u_strength;
+      uniform float u_zoom;
+      uniform float u_invert;
+      uniform vec2 u_imageAspect;
+      uniform vec2 u_canvasAspect;
 
-      loadedWidth = baseImage.naturalWidth || baseImage.width;
-      loadedHeight = baseImage.naturalHeight || baseImage.height;
-
-      [sourceCanvas, sourceCtx] = createOffscreenFromImage(baseImage);
-      [depthCanvas, depthCtx] = createOffscreenFromImage(depthImage);
-
-      if (depthCanvas.width !== loadedWidth || depthCanvas.height !== loadedHeight) {
-        const resized = document.createElement("canvas");
-        resized.width = loadedWidth;
-        resized.height = loadedHeight;
-        const rctx = resized.getContext("2d", { willReadFrequently: true });
-        rctx.drawImage(depthCanvas, 0, 0, resized.width, resized.height);
-        depthCanvas = resized;
-        depthCtx = rctx;
+      vec2 coverUv(vec2 uv, vec2 srcSize, vec2 dstSize) {
+        float srcAspect = srcSize.x / srcSize.y;
+        float dstAspect = dstSize.x / dstSize.y;
+        vec2 outUv = uv;
+        if (srcAspect > dstAspect) {
+          float scale = dstAspect / srcAspect;
+          outUv.x = (uv.x - 0.5) / scale + 0.5;
+        } else {
+          float scale = srcAspect / dstAspect;
+          outUv.y = (uv.y - 0.5) / scale + 0.5;
+        }
+        return outUv;
       }
 
-      sourceData = sourceCtx.getImageData(0, 0, loadedWidth, loadedHeight);
-      depthData = depthCtx.getImageData(0, 0, loadedWidth, loadedHeight);
+      void main() {
+        vec2 uv = (v_uv - 0.5) / u_zoom + 0.5;
+        vec2 fittedUv = coverUv(uv, u_imageAspect, u_canvasAspect);
 
-      setStatus(`準備完了: ${IMAGE_FILE} / ${DEPTH_FILE} (${loadedWidth}×${loadedHeight})`);
+        float depth = texture2D(u_depth, fittedUv).r;
+        if (u_invert > 0.5) {
+          depth = 1.0 - depth;
+        }
+
+        float centered = depth - 0.5;
+        vec2 offset = u_tilt * (centered + 0.5) * u_strength;
+        vec2 sampleUv = fittedUv - offset;
+
+        vec2 margin = vec2(0.001);
+        sampleUv = clamp(sampleUv, margin, 1.0 - margin);
+
+        vec4 color = texture2D(u_image, sampleUv);
+        gl_FragColor = color;
+      }
+    `;
+
+    function createShader(type, source) {
+      const shader = gl.createShader(type);
+      gl.shaderSource(shader, source);
+      gl.compileShader(shader);
+      if (!gl.getShaderParameter(shader, gl.COMPILE_STATUS)) {
+        const info = gl.getShaderInfoLog(shader);
+        gl.deleteShader(shader);
+        throw new Error(info || 'Shader compile error');
+      }
+      return shader;
+    }
+
+    function createProgram(vsSource, fsSource) {
+      const vs = createShader(gl.VERTEX_SHADER, vsSource);
+      const fs = createShader(gl.FRAGMENT_SHADER, fsSource);
+      const program = gl.createProgram();
+      gl.attachShader(program, vs);
+      gl.attachShader(program, fs);
+      gl.linkProgram(program);
+      if (!gl.getProgramParameter(program, gl.LINK_STATUS)) {
+        const info = gl.getProgramInfoLog(program);
+        gl.deleteProgram(program);
+        throw new Error(info || 'Program link error');
+      }
+      return program;
+    }
+
+    const program = createProgram(vertexSource, fragmentSource);
+    gl.useProgram(program);
+
+    const positionBuffer = gl.createBuffer();
+    gl.bindBuffer(gl.ARRAY_BUFFER, positionBuffer);
+    gl.bufferData(
+      gl.ARRAY_BUFFER,
+      new Float32Array([
+        -1, -1,
+         1, -1,
+        -1,  1,
+        -1,  1,
+         1, -1,
+         1,  1,
+      ]),
+      gl.STATIC_DRAW
+    );
+
+    const aPosition = gl.getAttribLocation(program, 'a_position');
+    gl.enableVertexAttribArray(aPosition);
+    gl.vertexAttribPointer(aPosition, 2, gl.FLOAT, false, 0, 0);
+
+    const uImage = gl.getUniformLocation(program, 'u_image');
+    const uDepth = gl.getUniformLocation(program, 'u_depth');
+    const uTilt = gl.getUniformLocation(program, 'u_tilt');
+    const uStrength = gl.getUniformLocation(program, 'u_strength');
+    const uZoom = gl.getUniformLocation(program, 'u_zoom');
+    const uInvert = gl.getUniformLocation(program, 'u_invert');
+    const uImageAspect = gl.getUniformLocation(program, 'u_imageAspect');
+    const uCanvasAspect = gl.getUniformLocation(program, 'u_canvasAspect');
+
+    gl.uniform1i(uImage, 0);
+    gl.uniform1i(uDepth, 1);
+
+    function createTexture(unit, image) {
+      const tex = gl.createTexture();
+      gl.activeTexture(gl.TEXTURE0 + unit);
+      gl.bindTexture(gl.TEXTURE_2D, tex);
+      gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, true);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+      gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, image);
+      return tex;
     }
 
     function loadImage(src) {
@@ -338,14 +426,35 @@
           loadImage(DEPTH_FILE)
         ]);
 
-        baseImage = img;
-        depthImage = dep;
-        prepareBuffers();
+        imageInfo = {
+          width: img.naturalWidth || img.width,
+          height: img.naturalHeight || img.height,
+          texture: createTexture(0, img)
+        };
+
+        depthInfo = {
+          width: dep.naturalWidth || dep.width,
+          height: dep.naturalHeight || dep.height,
+          texture: createTexture(1, dep)
+        };
+
+        setStatus(`準備完了: ${IMAGE_FILE} / ${DEPTH_FILE} (${imageInfo.width}×${imageInfo.height})`);
       } catch (e) {
         console.error(e);
         setStatus(`読み込み失敗: ${IMAGE_FILE} または ${DEPTH_FILE} が見つかりません`, true);
-        hintEl.textContent = "index.html と同じフォルダに 2ファイルを置いてください。";
+        hintEl.textContent = 'index.html と同じフォルダに 2ファイルを置いてください。';
       }
+    }
+
+    function resizeCanvas() {
+      const dpr = Math.min(window.devicePixelRatio || 1, 2);
+      const w = Math.max(1, Math.floor(window.innerWidth * dpr));
+      const h = Math.max(1, Math.floor(window.innerHeight * dpr));
+      if (canvas.width !== w || canvas.height !== h) {
+        canvas.width = w;
+        canvas.height = h;
+      }
+      gl.viewport(0, 0, canvas.width, canvas.height);
     }
 
     function onOrientation(event) {
@@ -355,8 +464,8 @@
       const deltaGamma = rawGamma - baselineGamma;
       const deltaBeta = rawBeta - baselineBeta;
 
-      targetTiltX = clamp(deltaGamma / 30, -1.5, 1.5);
-      targetTiltY = clamp(deltaBeta / 30, -1.5, 1.5);
+      targetTiltX = clamp(deltaGamma / 35, -1.2, 1.2);
+      targetTiltY = clamp(deltaBeta / 35, -1.2, 1.2);
 
       gammaStat.textContent = rawGamma.toFixed(2);
       betaStat.textContent = rawBeta.toFixed(2);
@@ -364,60 +473,73 @@
 
     async function enableOrientation() {
       try {
-        if (
-          typeof DeviceOrientationEvent !== "undefined" &&
-          typeof DeviceOrientationEvent.requestPermission === "function"
-        ) {
+        if (typeof DeviceOrientationEvent !== 'undefined' && typeof DeviceOrientationEvent.requestPermission === 'function') {
           const result = await DeviceOrientationEvent.requestPermission();
-          if (result !== "granted") {
-            setStatus("傾きセンサーの許可が拒否されました。", true);
+          if (result !== 'granted') {
+            setStatus('傾きセンサーの許可が拒否されました。', true);
             return;
           }
         }
 
-        window.addEventListener("deviceorientation", onOrientation, true);
+        window.addEventListener('deviceorientation', onOrientation, true);
         permissionBtn.disabled = true;
-        permissionBtn.textContent = "傾き許可済み";
-        hintEl.textContent = "スマホをゆっくり傾けて効果を確認してください。";
-        setStatus("傾きセンサーを有効化しました。");
+        permissionBtn.textContent = '傾き許可済み';
+        hintEl.textContent = 'スマホをゆっくり傾けて効果を確認してください。';
+        setStatus('傾きセンサーを有効化しました。');
       } catch (e) {
         console.error(e);
-        setStatus("傾きセンサーの有効化に失敗しました。", true);
+        setStatus('傾きセンサーの有効化に失敗しました。', true);
       }
     }
 
-    permissionBtn.addEventListener("click", enableOrientation);
+    permissionBtn.addEventListener('click', enableOrientation);
 
-    resetBtn.addEventListener("click", () => {
+    resetBtn.addEventListener('click', () => {
       baselineGamma = rawGamma;
       baselineBeta = rawBeta;
-      setStatus("現在の傾きを中心として再調整しました。");
+      setStatus('現在の傾きを中心として再調整しました。');
     });
 
-    invertBtn.addEventListener("click", () => {
+    invertBtn.addEventListener('click', () => {
       invertDepth = !invertDepth;
       updateLabels();
     });
 
-    [strengthEl, smoothEl, zoomEl].forEach(el => {
-      el.addEventListener("input", updateLabels);
+    [strengthEl, smoothEl, zoomEl].forEach((el) => {
+      el.addEventListener('input', updateLabels);
     });
 
-    function drawFallbackMessage() {
-      ctx.save();
-      ctx.clearRect(0, 0, canvas.width, canvas.height);
-      ctx.fillStyle = "#090d18";
-      ctx.fillRect(0, 0, canvas.width, canvas.height);
-      ctx.fillStyle = "rgba(255,255,255,0.92)";
-      ctx.textAlign = "center";
-      ctx.font = `${Math.max(18, Math.floor(canvas.width * 0.018))}px sans-serif`;
-      ctx.fillText("画像読み込み待機中", canvas.width / 2, canvas.height / 2);
-      ctx.restore();
-    }
+    canvas.addEventListener('click', () => {
+      if (!uiVisible) {
+        document.querySelector('.hud').style.display = 'grid';
+        document.querySelector('.footer').style.display = 'block';
+        uiVisible = true;
+        toggleUIBtn.textContent = 'メニュー非表示';
+      }
+    });
 
-    function renderParallax() {
-      if (!sourceData || !depthData) {
-        drawFallbackMessage();
+    toggleUIBtn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      if (uiVisible) {
+        document.querySelector('.hud').style.display = 'none';
+        document.querySelector('.footer').style.display = 'none';
+        uiVisible = false;
+        toggleUIBtn.textContent = 'メニュー表示';
+      } else {
+        document.querySelector('.hud').style.display = 'grid';
+        document.querySelector('.footer').style.display = 'block';
+        uiVisible = true;
+        toggleUIBtn.textContent = 'メニュー非表示';
+      }
+    });
+
+    function render() {
+      resizeCanvas();
+      gl.clearColor(0.03, 0.04, 0.08, 1.0);
+      gl.clear(gl.COLOR_BUFFER_BIT);
+
+      if (!imageInfo || !depthInfo) {
+        requestAnimationFrame(render);
         return;
       }
 
@@ -428,63 +550,26 @@
       tiltXStat.textContent = currentTiltX.toFixed(2);
       tiltYStat.textContent = currentTiltY.toFixed(2);
 
-      const strength = Number(strengthEl.value);
-      const zoom = Number(zoomEl.value);
+      gl.activeTexture(gl.TEXTURE0);
+      gl.bindTexture(gl.TEXTURE_2D, imageInfo.texture);
+      gl.activeTexture(gl.TEXTURE1);
+      gl.bindTexture(gl.TEXTURE_2D, depthInfo.texture);
 
-      const out = ctx.createImageData(loadedWidth, loadedHeight);
-      const src = sourceData.data;
-      const dep = depthData.data;
-      const dst = out.data;
+      gl.uniform2f(uTilt, currentTiltX, currentTiltY);
+      gl.uniform1f(uStrength, Number(strengthEl.value));
+      gl.uniform1f(uZoom, Number(zoomEl.value));
+      gl.uniform1f(uInvert, invertDepth ? 1.0 : 0.0);
+      gl.uniform2f(uImageAspect, imageInfo.width, imageInfo.height);
+      gl.uniform2f(uCanvasAspect, canvas.width, canvas.height);
 
-      for (let y = 0; y < loadedHeight; y++) {
-        for (let x = 0; x < loadedWidth; x++) {
-          const i = (y * loadedWidth + x) * 4;
-          let d = dep[i] / 255; // depth.pngはグレースケール想定
-          if (invertDepth) d = 1 - d;
-
-          const shiftX = currentTiltX * d * strength;
-          const shiftY = currentTiltY * d * strength;
-
-          const sx = clamp(Math.round(x - shiftX), 0, loadedWidth - 1);
-          const sy = clamp(Math.round(y - shiftY), 0, loadedHeight - 1);
-          const si = (sy * loadedWidth + sx) * 4;
-
-          dst[i]     = src[si];
-          dst[i + 1] = src[si + 1];
-          dst[i + 2] = src[si + 2];
-          dst[i + 3] = 255;
-        }
-      }
-
-      const renderCanvas = document.createElement("canvas");
-      renderCanvas.width = loadedWidth;
-      renderCanvas.height = loadedHeight;
-      const rctx = renderCanvas.getContext("2d");
-      rctx.putImageData(out, 0, 0);
-
-      ctx.clearRect(0, 0, canvas.width, canvas.height);
-
-      const viewW = canvas.width;
-      const viewH = canvas.height;
-      const scale = Math.max(viewW / loadedWidth, viewH / loadedHeight) * zoom;
-      const drawW = loadedWidth * scale;
-      const drawH = loadedHeight * scale;
-      const dx = (viewW - drawW) / 2;
-      const dy = (viewH - drawH) / 2;
-
-      ctx.imageSmoothingEnabled = true;
-      ctx.drawImage(renderCanvas, dx, dy, drawW, drawH);
-    }
-
-    function loop() {
-      resizeCanvas();
-      renderParallax();
-      requestAnimationFrame(loop);
+      gl.drawArrays(gl.TRIANGLES, 0, 6);
+      requestAnimationFrame(render);
     }
 
     updateLabels();
     loadDefaultFiles();
-    loop();
+    render();
   </script>
 </body>
 </html>
+
