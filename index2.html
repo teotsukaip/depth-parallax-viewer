@@ -606,21 +606,18 @@
 
           const fitted = coverUv(uvx, uvy, pw, ph, cw, ch);
 
-          let d1 = bilinearMono(depth, pw, ph, fitted.x, fitted.y);
-          if (inv) d1 = 1 - d1;
-          let qx = fitted.x - tx * d1 * strength;
-          let qy = fitted.y - ty * d1 * strength;
-          qx = clamp(qx, margin, 1 - margin);
-          qy = clamp(qy, margin, 1 - margin);
+          let px = fitted.x;
+          let py = fitted.y;
+          for (let it = 0; it < 4; it++) {
+            let d = bilinearMono(depth, pw, ph, px, py);
+            if (inv) d = 1 - d;
+            px = fitted.x - tx * d * strength;
+            py = fitted.y - ty * d * strength;
+            px = clamp(px, margin, 1 - margin);
+            py = clamp(py, margin, 1 - margin);
+          }
 
-          let d2 = bilinearMono(depth, pw, ph, qx, qy);
-          if (inv) d2 = 1 - d2;
-          let sx = fitted.x - tx * d2 * strength;
-          let sy = fitted.y - ty * d2 * strength;
-          sx = clamp(sx, margin, 1 - margin);
-          sy = clamp(sy, margin, 1 - margin);
-
-          const { r, g, b: bb, a } = bilinearRgba(color, pw, ph, sx, sy);
+          const { r, g, b: bb, a } = bilinearRgba(color, pw, ph, px, py);
           const di = (wy * workW + wx) * 4;
           out[di] = r;
           out[di + 1] = g;
