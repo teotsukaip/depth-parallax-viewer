@@ -520,17 +520,12 @@
 
     toggleUIBtn.addEventListener('click', (e) => {
       e.stopPropagation();
-      if (uiVisible) {
-        document.querySelector('.hud').style.display = 'none';
-        document.querySelector('.footer').style.display = 'none';
-        uiVisible = false;
-        toggleUIBtn.textContent = 'メニュー表示';
-      } else {
-        document.querySelector('.hud').style.display = 'grid';
-        document.querySelector('.footer').style.display = 'block';
-        uiVisible = true;
-        toggleUIBtn.textContent = 'メニュー非表示';
-      }
+
+      // ボタンは「消す専用」
+      document.querySelector('.hud').style.setProperty('display', 'none', 'important');
+      document.querySelector('.footer').style.setProperty('display', 'none', 'important');
+
+      uiVisible = false;
     });
 
     function render() {
