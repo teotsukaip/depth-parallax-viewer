@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
-  <title>Gyro Depth 3D Viewer - WebGL</title>
+  <title>Gyro Depth 3D Viewer - Canvas 2D</title>
   <style>
     :root {
       --bg: #0b1020;
@@ -164,27 +164,29 @@
   </style>
 </head>
 <body>
-  <canvas id="glcanvas"></canvas>
+  <canvas id="canvas2d"></canvas>
 
   <div class="hud">
     <div class="panel">
-      <div class="title">Gyro Depth 3D Viewer - WebGL</div>
+      <div class="title">Gyro Depth 3D Viewer - Canvas 2D</div>
       <div class="sub">
         同じフォルダにある <b>IMG_8098.PNG</b> と <b>depth.png</b> を自動読み込みします。<br>
-        WebGLでGPU描画するので、Canvas版より軽くて滑らかです。白が近い depth map 前提です。
+        <b>WebGL なし</b>で CPU 上のピクセル処理です。index.html より重い場合があります。白が近い depth map 前提です。<br>
+        <span style="opacity:0.92">奥行きが画像に追従しないときは <b>MiDas.py</b> を表示中のカラーと同じ画像から実行し直してください。</span>
       </div>
     </div>
 
     <div class="panel">
       <div class="buttons">
+        <button id="toggleUIBtn">メニュー非表示</button>
         <button id="permissionBtn" class="primary">傾き許可を有効化</button>
         <button id="resetBtn">センター再調整</button>
         <button id="invertBtn">Depth反転: OFF</button>
       </div>
 
       <div class="row">
-        <div class="label">強さ <span id="strengthValue">0.035</span></div>
-        <input id="strength" type="range" min="0.000" max="0.120" step="0.001" value="0.035" />
+        <div class="label">強さ <span id="strengthValue">0.100</span></div>
+        <input id="strength" type="range" min="0.000" max="0.120" step="0.001" value="0.1" />
       </div>
 
       <div class="row">
@@ -216,9 +218,16 @@
   <script>
     const IMAGE_FILE = 'IMG_8098.PNG';
     const DEPTH_FILE = 'depth.png';
+    /** ソースを詰めすぎない（メモリと index.html との対応） */
+    const MAX_PROC_DIM = 1600;
+    /** 1フレームの作業解像度（長辺）。大きいほど重い */
+    const MAX_WORK_LONG = 640;
 
-    const canvas = document.getElementById('glcanvas');
+    const canvas = document.getElementById('canvas2d');
+    const ctx = canvas.getContext('2d', { alpha: false, desynchronized: true });
+
     const permissionBtn = document.getElementById('permissionBtn');
+    const toggleUIBtn = document.getElementById('toggleUIBtn');
     const resetBtn = document.getElementById('resetBtn');
     const invertBtn = document.getElementById('invertBtn');
     const strengthEl = document.getElementById('strength');
@@ -236,20 +245,14 @@
     const statusEl = document.getElementById('status');
     const hintEl = document.getElementById('hint');
 
-    const gl = canvas.getContext('webgl', {
-      antialias: true,
-      alpha: false,
-      preserveDrawingBuffer: false,
-      premultipliedAlpha: false
-    });
-
-    if (!gl) {
-      statusEl.textContent = 'WebGLが使えません。Safari/Chromeで開いてください。';
+    if (!ctx) {
+      statusEl.textContent = 'Canvas 2D が使えません。';
       statusEl.classList.add('warn');
-      throw new Error('WebGL not supported');
+      throw new Error('2d context not supported');
     }
 
     let invertDepth = false;
+    let uiVisible = true;
     let rawGamma = 0;
     let rawBeta = 0;
     let baselineGamma = 0;
@@ -259,8 +262,12 @@
     let currentTiltX = 0;
     let currentTiltY = 0;
 
-    let imageInfo = null;
-    let depthInfo = null;
+    /** @type {{ procW: number, procH: number, color: Uint8ClampedArray, depth: Uint8ClampedArray } | null} */
+    let buffers = null;
+
+    const workCanvas = document.createElement('canvas');
+    const workCtx = workCanvas.getContext('2d', { willReadFrequently: true });
+    let workImageData = null;
 
     const clamp = (v, min, max) => Math.max(min, Math.min(max, v));
 
@@ -276,135 +283,85 @@
       invertBtn.textContent = `Depth反転: ${invertDepth ? 'ON' : 'OFF'}`;
     }
 
-    const vertexSource = `
-      attribute vec2 a_position;
-      varying vec2 v_uv;
-      void main() {
-        v_uv = a_position * 0.5 + 0.5;
-        gl_Position = vec4(a_position, 0.0, 1.0);
+    /** index.html の fragment と同じ object-fit: cover UV */
+    function coverUv(uvx, uvy, srcW, srcH, dstW, dstH) {
+      const srcAspect = srcW / srcH;
+      const dstAspect = dstW / dstH;
+      let outX = uvx;
+      let outY = uvy;
+      if (srcAspect > dstAspect) {
+        const scale = dstAspect / srcAspect;
+        outX = (uvx - 0.5) * scale + 0.5;
+      } else {
+        const scale = srcAspect / dstAspect;
+        outY = (uvy - 0.5) * scale + 0.5;
       }
-    `;
-
-    const fragmentSource = `
-      precision mediump float;
-      varying vec2 v_uv;
-      uniform sampler2D u_image;
-      uniform sampler2D u_depth;
-      uniform vec2 u_tilt;
-      uniform float u_strength;
-      uniform float u_zoom;
-      uniform float u_invert;
-      uniform vec2 u_imageAspect;
-      uniform vec2 u_canvasAspect;
-
-      // object-fit: cover — uniform scale, center crop
-      vec2 coverUv(vec2 uv, vec2 srcSize, vec2 dstSize) {
-        float srcAspect = srcSize.x / srcSize.y;
-        float dstAspect = dstSize.x / dstSize.y;
-        vec2 outUv = uv;
-        if (srcAspect > dstAspect) {
-          float scale = dstAspect / srcAspect;
-          outUv.x = (uv.x - 0.5) * scale + 0.5;
-        } else {
-          float scale = srcAspect / dstAspect;
-          outUv.y = (uv.y - 0.5) * scale + 0.5;
-        }
-        return outUv;
-      }
-
-      void main() {
-        vec2 uv = (v_uv - 0.5) / u_zoom + 0.5;
-        vec2 fittedUv = coverUv(uv, u_imageAspect, u_canvasAspect);
-
-        float depth = texture2D(u_depth, fittedUv).r;
-        if (u_invert > 0.5) {
-          depth = 1.0 - depth;
-        }
-
-        float centered = depth - 0.5;
-        vec2 offset = u_tilt * (centered + 0.5) * u_strength;
-        vec2 sampleUv = fittedUv - offset;
-
-        vec2 margin = vec2(0.001);
-        sampleUv = clamp(sampleUv, margin, 1.0 - margin);
-
-        vec4 color = texture2D(u_image, sampleUv);
-        gl_FragColor = color;
-      }
-    `;
-
-    function createShader(type, source) {
-      const shader = gl.createShader(type);
-      gl.shaderSource(shader, source);
-      gl.compileShader(shader);
-      if (!gl.getShaderParameter(shader, gl.COMPILE_STATUS)) {
-        const info = gl.getShaderInfoLog(shader);
-        gl.deleteShader(shader);
-        throw new Error(info || 'Shader compile error');
-      }
-      return shader;
+      return { x: outX, y: outY };
     }
 
-    function createProgram(vsSource, fsSource) {
-      const vs = createShader(gl.VERTEX_SHADER, vsSource);
-      const fs = createShader(gl.FRAGMENT_SHADER, fsSource);
-      const program = gl.createProgram();
-      gl.attachShader(program, vs);
-      gl.attachShader(program, fs);
-      gl.linkProgram(program);
-      if (!gl.getProgramParameter(program, gl.LINK_STATUS)) {
-        const info = gl.getProgramInfoLog(program);
-        gl.deleteProgram(program);
-        throw new Error(info || 'Program link error');
-      }
-      return program;
+    /**
+     * WebGL の texture2D と揃える: u 左→右、v は下が 0・上が 1（FLIP_Y 済みテクスチャ想定）
+     * ImageData は上が行 0 なので内部で変換
+     */
+    function bilinearMono(data, w, h, u, vGl) {
+      const uu = clamp(u, 0, 1);
+      const vv = clamp(vGl, 0, 1);
+      const vTop = 1 - vv;
+      const x = uu * (w - 1);
+      const y = vTop * (h - 1);
+      const x0 = Math.floor(x);
+      const y0 = Math.floor(y);
+      const x1 = Math.min(x0 + 1, w - 1);
+      const y1 = Math.min(y0 + 1, h - 1);
+      const fx = x - x0;
+      const fy = y - y0;
+      const i00 = (y0 * w + x0) * 4;
+      const i10 = (y0 * w + x1) * 4;
+      const i01 = (y1 * w + x0) * 4;
+      const i11 = (y1 * w + x1) * 4;
+      const d00 = data[i00] / 255;
+      const d10 = data[i10] / 255;
+      const d01 = data[i01] / 255;
+      const d11 = data[i11] / 255;
+      const a = d00 * (1 - fx) + d10 * fx;
+      const b = d01 * (1 - fx) + d11 * fx;
+      return a * (1 - fy) + b * fy;
     }
 
-    const program = createProgram(vertexSource, fragmentSource);
-    gl.useProgram(program);
-
-    const positionBuffer = gl.createBuffer();
-    gl.bindBuffer(gl.ARRAY_BUFFER, positionBuffer);
-    gl.bufferData(
-      gl.ARRAY_BUFFER,
-      new Float32Array([
-        -1, -1,
-         1, -1,
-        -1,  1,
-        -1,  1,
-         1, -1,
-         1,  1,
-      ]),
-      gl.STATIC_DRAW
-    );
-
-    const aPosition = gl.getAttribLocation(program, 'a_position');
-    gl.enableVertexAttribArray(aPosition);
-    gl.vertexAttribPointer(aPosition, 2, gl.FLOAT, false, 0, 0);
-
-    const uImage = gl.getUniformLocation(program, 'u_image');
-    const uDepth = gl.getUniformLocation(program, 'u_depth');
-    const uTilt = gl.getUniformLocation(program, 'u_tilt');
-    const uStrength = gl.getUniformLocation(program, 'u_strength');
-    const uZoom = gl.getUniformLocation(program, 'u_zoom');
-    const uInvert = gl.getUniformLocation(program, 'u_invert');
-    const uImageAspect = gl.getUniformLocation(program, 'u_imageAspect');
-    const uCanvasAspect = gl.getUniformLocation(program, 'u_canvasAspect');
-
-    gl.uniform1i(uImage, 0);
-    gl.uniform1i(uDepth, 1);
-
-    function createTexture(unit, image) {
-      const tex = gl.createTexture();
-      gl.activeTexture(gl.TEXTURE0 + unit);
-      gl.bindTexture(gl.TEXTURE_2D, tex);
-      gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, true);
-      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
-      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
-      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
-      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
-      gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, image);
-      return tex;
+    function bilinearRgba(data, w, h, u, vGl) {
+      const uu = clamp(u, 0, 1);
+      const vv = clamp(vGl, 0, 1);
+      const vTop = 1 - vv;
+      const x = uu * (w - 1);
+      const y = vTop * (h - 1);
+      const x0 = Math.floor(x);
+      const y0 = Math.floor(y);
+      const x1 = Math.min(x0 + 1, w - 1);
+      const y1 = Math.min(y0 + 1, h - 1);
+      const fx = x - x0;
+      const fy = y - y0;
+      let r = 0;
+      let g = 0;
+      let b = 0;
+      let a = 0;
+      for (let ch = 0; ch < 4; ch++) {
+        const o00 = (y0 * w + x0) * 4 + ch;
+        const o10 = (y0 * w + x1) * 4 + ch;
+        const o01 = (y1 * w + x0) * 4 + ch;
+        const o11 = (y1 * w + x1) * 4 + ch;
+        const p00 = data[o00];
+        const p10 = data[o10];
+        const p01 = data[o01];
+        const p11 = data[o11];
+        const pa = p00 * (1 - fx) + p10 * fx;
+        const pb = p01 * (1 - fx) + p11 * fx;
+        const p = pa * (1 - fy) + pb * fy;
+        if (ch === 0) r = p;
+        else if (ch === 1) g = p;
+        else if (ch === 2) b = p;
+        else a = p;
+      }
+      return { r, g, b, a };
     }
 
     function loadImage(src) {
@@ -425,14 +382,32 @@
       const c = document.createElement('canvas');
       c.width = targetW;
       c.height = targetH;
-      const ctx = c.getContext('2d');
-      if (!ctx) {
+      const cctx = c.getContext('2d');
+      if (!cctx) {
         return { source: depthImg, resampled: false };
       }
-      ctx.imageSmoothingEnabled = true;
-      ctx.imageSmoothingQuality = 'high';
-      ctx.drawImage(depthImg, 0, 0, sw, sh, 0, 0, targetW, targetH);
+      cctx.imageSmoothingEnabled = true;
+      cctx.imageSmoothingQuality = 'high';
+      cctx.drawImage(depthImg, 0, 0, sw, sh, 0, 0, targetW, targetH);
       return { source: c, resampled: true };
+    }
+
+    function rasterToBuffers(colorImg, depthSource, procW, procH) {
+      const c = document.createElement('canvas');
+      c.width = procW;
+      c.height = procH;
+      const cctx = c.getContext('2d', { willReadFrequently: true });
+      cctx.drawImage(colorImg, 0, 0, colorImg.naturalWidth || colorImg.width, colorImg.naturalHeight || colorImg.height, 0, 0, procW, procH);
+      const color = cctx.getImageData(0, 0, procW, procH).data;
+
+      const d = document.createElement('canvas');
+      d.width = procW;
+      d.height = procH;
+      const dctx = d.getContext('2d', { willReadFrequently: true });
+      dctx.drawImage(depthSource, 0, 0, procW, procH);
+      const depth = dctx.getImageData(0, 0, procW, procH).data;
+
+      return { procW, procH, color, depth };
     }
 
     async function loadDefaultFiles() {
@@ -446,26 +421,27 @@
         const imgH = img.naturalHeight || img.height;
         const { source: depthSource, resampled } = resampleDepthToMatchColor(dep, imgW, imgH);
 
-        imageInfo = {
-          width: imgW,
-          height: imgH,
-          texture: createTexture(0, img)
-        };
+        let procW = imgW;
+        let procH = imgH;
+        const long = Math.max(procW, procH);
+        if (long > MAX_PROC_DIM) {
+          const s = MAX_PROC_DIM / long;
+          procW = Math.max(1, Math.round(imgW * s));
+          procH = Math.max(1, Math.round(imgH * s));
+        }
 
-        depthInfo = {
-          width: imgW,
-          height: imgH,
-          texture: createTexture(1, depthSource)
-        };
+        buffers = rasterToBuffers(img, depthSource, procW, procH);
 
-        const alignNote = resampled
-          ? '（depth をカラー解像度に合わせてリサンプル）'
+        const alignNote = resampled ? '（depth をカラー解像度に合わせてリサンプル）' : '';
+        const procNote = procW < imgW || procH < imgH
+          ? ` — 処理 ${procW}×${procH}（軽量化）`
           : '';
-        setStatus(`準備完了: ${IMAGE_FILE} / ${DEPTH_FILE} (${imgW}×${imgH})${alignNote}`);
+        setStatus(`準備完了: ${IMAGE_FILE} / ${DEPTH_FILE}（元 ${imgW}×${imgH}）${alignNote}${procNote}`);
       } catch (e) {
         console.error(e);
+        buffers = null;
         setStatus(`読み込み失敗: ${IMAGE_FILE} または ${DEPTH_FILE} が見つかりません`, true);
-        hintEl.textContent = 'index.html と同じフォルダに 2ファイルを置いてください。';
+        hintEl.textContent = 'index2.html と同じフォルダに 2ファイルを置いてください。';
       }
     }
 
@@ -477,7 +453,6 @@
         canvas.width = w;
         canvas.height = h;
       }
-      gl.viewport(0, 0, canvas.width, canvas.height);
     }
 
     function onOrientation(event) {
@@ -532,12 +507,97 @@
       el.addEventListener('input', updateLabels);
     });
 
+    canvas.addEventListener('click', () => {
+      if (!uiVisible) {
+        document.querySelector('.hud').style.display = 'grid';
+        document.querySelector('.footer').style.display = 'block';
+        uiVisible = true;
+        toggleUIBtn.textContent = 'メニュー非表示';
+      }
+    });
+
+    toggleUIBtn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      document.querySelector('.hud').style.setProperty('display', 'none', 'important');
+      document.querySelector('.footer').style.setProperty('display', 'none', 'important');
+      uiVisible = false;
+    });
+
+    function renderFrame() {
+      const cw = canvas.width;
+      const ch = canvas.height;
+      const b = buffers;
+      if (!b || !workCtx) {
+        return;
+      }
+
+      const long = Math.max(cw, ch);
+      const scale = Math.min(1, MAX_WORK_LONG / long);
+      const workW = Math.max(1, Math.floor(cw * scale));
+      const workH = Math.max(1, Math.floor(ch * scale));
+
+      if (workCanvas.width !== workW || workCanvas.height !== workH) {
+        workCanvas.width = workW;
+        workCanvas.height = workH;
+        workImageData = workCtx.createImageData(workW, workH);
+      }
+
+      const { procW, procH, color, depth } = b;
+      const out = workImageData.data;
+      const zoom = Number(zoomEl.value);
+      const strength = Number(strengthEl.value);
+      const tx = currentTiltX;
+      const ty = currentTiltY;
+      const inv = invertDepth;
+
+      const pw = procW;
+      const ph = procH;
+      const margin = 0.001;
+
+      for (let wy = 0; wy < workH; wy++) {
+        for (let wx = 0; wx < workW; wx++) {
+          const vUvX = (wx + 0.5) / workW;
+          const vUvY = 1 - (wy + 0.5) / workH;
+
+          const uvx = (vUvX - 0.5) / zoom + 0.5;
+          const uvy = (vUvY - 0.5) / zoom + 0.5;
+
+          const fitted = coverUv(uvx, uvy, pw, ph, workW, workH);
+
+          let d = bilinearMono(depth, pw, ph, fitted.x, fitted.y);
+          if (inv) d = 1 - d;
+
+          const ox = tx * d * strength;
+          const oy = ty * d * strength;
+
+          let sx = fitted.x - ox;
+          let sy = fitted.y - oy;
+          sx = clamp(sx, margin, 1 - margin);
+          sy = clamp(sy, margin, 1 - margin);
+
+          const { r, g, b: bb, a } = bilinearRgba(color, pw, ph, sx, sy);
+          const di = (wy * workW + wx) * 4;
+          out[di] = r;
+          out[di + 1] = g;
+          out[di + 2] = bb;
+          out[di + 3] = a;
+        }
+      }
+
+      workCtx.putImageData(workImageData, 0, 0);
+      ctx.imageSmoothingEnabled = true;
+      ctx.imageSmoothingQuality = 'high';
+      ctx.fillStyle = '#070a12';
+      ctx.fillRect(0, 0, cw, ch);
+      ctx.drawImage(workCanvas, 0, 0, workW, workH, 0, 0, cw, ch);
+    }
+
     function render() {
       resizeCanvas();
-      gl.clearColor(0.03, 0.04, 0.08, 1.0);
-      gl.clear(gl.COLOR_BUFFER_BIT);
+      ctx.fillStyle = '#070a12';
+      ctx.fillRect(0, 0, canvas.width, canvas.height);
 
-      if (!imageInfo || !depthInfo) {
+      if (!buffers) {
         requestAnimationFrame(render);
         return;
       }
@@ -549,19 +609,7 @@
       tiltXStat.textContent = currentTiltX.toFixed(2);
       tiltYStat.textContent = currentTiltY.toFixed(2);
 
-      gl.activeTexture(gl.TEXTURE0);
-      gl.bindTexture(gl.TEXTURE_2D, imageInfo.texture);
-      gl.activeTexture(gl.TEXTURE1);
-      gl.bindTexture(gl.TEXTURE_2D, depthInfo.texture);
-
-      gl.uniform2f(uTilt, currentTiltX, currentTiltY);
-      gl.uniform1f(uStrength, Number(strengthEl.value));
-      gl.uniform1f(uZoom, Number(zoomEl.value));
-      gl.uniform1f(uInvert, invertDepth ? 1.0 : 0.0);
-      gl.uniform2f(uImageAspect, imageInfo.width, imageInfo.height);
-      gl.uniform2f(uCanvasAspect, canvas.width, canvas.height);
-
-      gl.drawArrays(gl.TRIANGLES, 0, 6);
+      renderFrame();
       requestAnimationFrame(render);
     }
 
