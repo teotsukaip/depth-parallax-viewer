@@ -320,21 +320,21 @@
       void main() {
         vec2 uv = (v_uv - 0.5) / u_zoom + 0.5;
         vec2 fittedUv = coverUv(uv, u_imageAspect, u_canvasAspect);
-
-        float depth = texture2D(u_depth, fittedUv).r;
-        if (u_invert > 0.5) {
-          depth = 1.0 - depth;
-        }
-
-        float centered = depth - 0.5;
-        vec2 offset = u_tilt * (centered + 0.5) * u_strength;
-        vec2 sampleUv = fittedUv - offset;
-
         vec2 margin = vec2(0.001);
+
+        // 深度を fittedUv だけで読むと、シフト後のカラーと参照位置がずれ「奥行きが画面に固定」に見える。
+        // 一度ずらした UV で深度を取り直してから最終オフセットを決める（簡易 2 段 relief）。
+        float d1 = texture2D(u_depth, fittedUv).r;
+        if (u_invert > 0.5) d1 = 1.0 - d1;
+        vec2 q1 = fittedUv - u_tilt * d1 * u_strength;
+        q1 = clamp(q1, margin, 1.0 - margin);
+
+        float d2 = texture2D(u_depth, q1).r;
+        if (u_invert > 0.5) d2 = 1.0 - d2;
+        vec2 sampleUv = fittedUv - u_tilt * d2 * u_strength;
         sampleUv = clamp(sampleUv, margin, 1.0 - margin);
 
-        vec4 color = texture2D(u_image, sampleUv);
-        gl_FragColor = color;
+        gl_FragColor = texture2D(u_image, sampleUv);
       }
     `;
 
