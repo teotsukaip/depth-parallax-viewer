@@ -321,16 +321,12 @@
         vec2 uv = (v_uv - 0.5) / u_zoom + 0.5;
         vec2 fittedUv = coverUv(uv, u_imageAspect, u_canvasAspect);
         vec2 margin = vec2(0.001);
-        // 緩和: p ← fittedUv - tilt*depth(p) を繰り返し、深度参照を「ずれた後の画素」に寄せる。
-        // 2 段だけだと深度が画面座標に残り、ジャイロでカラーだけ動いて二重に見えやすい。
-        vec2 p = fittedUv;
-        for (int i = 0; i < 6; i++) {
-          float d = texture2D(u_depth, p).r;
-          if (u_invert > 0.5) d = 1.0 - d;
-          p = fittedUv - u_tilt * d * u_strength;
-          p = clamp(p, margin, 1.0 - margin);
-        }
-        gl_FragColor = texture2D(u_image, p);
+        // 1 パスのみ。反復すると深度の急変で UV が振れ、傾き時に二重・ゴーストが出やすい。
+        float d = texture2D(u_depth, fittedUv).r;
+        if (u_invert > 0.5) d = 1.0 - d;
+        vec2 sampleUv = fittedUv - u_tilt * d * u_strength;
+        sampleUv = clamp(sampleUv, margin, 1.0 - margin);
+        gl_FragColor = texture2D(u_image, sampleUv);
       }
     `;
 
