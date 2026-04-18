@@ -416,6 +416,25 @@
       });
     }
 
+    function resampleDepthToMatchColor(depthImg, targetW, targetH) {
+      const sw = depthImg.naturalWidth || depthImg.width;
+      const sh = depthImg.naturalHeight || depthImg.height;
+      if (sw === targetW && sh === targetH) {
+        return { source: depthImg, resampled: false };
+      }
+      const c = document.createElement('canvas');
+      c.width = targetW;
+      c.height = targetH;
+      const ctx = c.getContext('2d');
+      if (!ctx) {
+        return { source: depthImg, resampled: false };
+      }
+      ctx.imageSmoothingEnabled = true;
+      ctx.imageSmoothingQuality = 'high';
+      ctx.drawImage(depthImg, 0, 0, sw, sh, 0, 0, targetW, targetH);
+      return { source: c, resampled: true };
+    }
+
     async function loadDefaultFiles() {
       try {
         const [img, dep] = await Promise.all([
@@ -423,19 +442,26 @@
           loadImage(DEPTH_FILE)
         ]);
 
+        const imgW = img.naturalWidth || img.width;
+        const imgH = img.naturalHeight || img.height;
+        const { source: depthSource, resampled } = resampleDepthToMatchColor(dep, imgW, imgH);
+
         imageInfo = {
-          width: img.naturalWidth || img.width,
-          height: img.naturalHeight || img.height,
+          width: imgW,
+          height: imgH,
           texture: createTexture(0, img)
         };
 
         depthInfo = {
-          width: dep.naturalWidth || dep.width,
-          height: dep.naturalHeight || dep.height,
-          texture: createTexture(1, dep)
+          width: imgW,
+          height: imgH,
+          texture: createTexture(1, depthSource)
         };
 
-        setStatus(`準備完了: ${IMAGE_FILE} / ${DEPTH_FILE} (${imageInfo.width}×${imageInfo.height})`);
+        const alignNote = resampled
+          ? '（depth をカラー解像度に合わせてリサンプル）'
+          : '';
+        setStatus(`準備完了: ${IMAGE_FILE} / ${DEPTH_FILE} (${imgW}×${imgH})${alignNote}`);
       } catch (e) {
         console.error(e);
         setStatus(`読み込み失敗: ${IMAGE_FILE} または ${DEPTH_FILE} が見つかりません`, true);

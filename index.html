@@ -172,7 +172,8 @@
       <div class="title">Gyro Depth 3D Viewer - WebGL</div>
       <div class="sub">
         同じフォルダにある <b>IMG_8098.PNG</b> と <b>depth.png</b> を自動読み込みします。<br>
-        WebGLでGPU描画するので、Canvas版より軽くて滑らかです。白が近い depth map 前提です。
+        WebGLでGPU描画するので、Canvas版より軽くて滑らかです。白が近い depth map 前提です。<br>
+        <span style="opacity:0.92">奥行きが画像に追従しないときは、<b>MiDas.py</b> を表示中のカラーと同じ画像から実行し直すか、深度の解像度がカラーと違う場合は自動でリサンプルされます。</span>
       </div>
     </div>
 
@@ -420,6 +421,26 @@
       });
     }
 
+    /** depth をカラーと同じピクセル格子に揃えないと、同じ UV で読んだときに奥行きが画像に追従しません */
+    function resampleDepthToMatchColor(depthImg, targetW, targetH) {
+      const sw = depthImg.naturalWidth || depthImg.width;
+      const sh = depthImg.naturalHeight || depthImg.height;
+      if (sw === targetW && sh === targetH) {
+        return { source: depthImg, resampled: false };
+      }
+      const c = document.createElement('canvas');
+      c.width = targetW;
+      c.height = targetH;
+      const ctx = c.getContext('2d');
+      if (!ctx) {
+        return { source: depthImg, resampled: false };
+      }
+      ctx.imageSmoothingEnabled = true;
+      ctx.imageSmoothingQuality = 'high';
+      ctx.drawImage(depthImg, 0, 0, sw, sh, 0, 0, targetW, targetH);
+      return { source: c, resampled: true };
+    }
+
     async function loadDefaultFiles() {
       try {
         const [img, dep] = await Promise.all([
@@ -427,19 +448,26 @@
           loadImage(DEPTH_FILE)
         ]);
 
+        const imgW = img.naturalWidth || img.width;
+        const imgH = img.naturalHeight || img.height;
+        const { source: depthSource, resampled } = resampleDepthToMatchColor(dep, imgW, imgH);
+
         imageInfo = {
-          width: img.naturalWidth || img.width,
-          height: img.naturalHeight || img.height,
+          width: imgW,
+          height: imgH,
           texture: createTexture(0, img)
         };
 
         depthInfo = {
-          width: dep.naturalWidth || dep.width,
-          height: dep.naturalHeight || dep.height,
-          texture: createTexture(1, dep)
+          width: imgW,
+          height: imgH,
+          texture: createTexture(1, depthSource)
         };
 
-        setStatus(`準備完了: ${IMAGE_FILE} / ${DEPTH_FILE} (${imageInfo.width}×${imageInfo.height})`);
+        const alignNote = resampled
+          ? '（depth をカラー解像度に合わせてリサンプル）'
+          : '';
+        setStatus(`準備完了: ${IMAGE_FILE} / ${DEPTH_FILE} (${imgW}×${imgH})${alignNote}`);
       } catch (e) {
         console.error(e);
         setStatus(`読み込み失敗: ${IMAGE_FILE} または ${DEPTH_FILE} が見つかりません`, true);

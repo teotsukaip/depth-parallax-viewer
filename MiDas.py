@@ -1,5 +1,10 @@
 import torch
 import cv2
+from pathlib import Path
+
+# index.html と同じ表示用画像から深度を作る（input.jpg だけだとビューアとズレます）
+IMAGE_CANDIDATES = [Path("IMG_8098.PNG"), Path("input.jpg")]
+image_path = next((p for p in IMAGE_CANDIDATES if p.exists()), IMAGE_CANDIDATES[0])
 
 model_type = "DPT_Large"  # 重いのでMacならMiDaS_small推奨
 
@@ -18,8 +23,11 @@ else:
     transform = midas_transforms.small_transform
 
 # 画像読み込み
-img = cv2.imread("input.jpg")
+img = cv2.imread(str(image_path))
+if img is None:
+    raise SystemExit(f"画像が読めません: {image_path}（{', '.join(str(p) for p in IMAGE_CANDIDATES)} のいずれかを置いてください）")
 img_rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+print(f"depth 推論元: {image_path} ({img_rgb.shape[1]}×{img_rgb.shape[0]})")
 
 # 推論
 input_batch = transform(img_rgb).to(device)
