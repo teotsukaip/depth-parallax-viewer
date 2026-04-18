@@ -297,16 +297,17 @@
       uniform vec2 u_imageAspect;
       uniform vec2 u_canvasAspect;
 
+      // object-fit: cover — uniform scale, center crop
       vec2 coverUv(vec2 uv, vec2 srcSize, vec2 dstSize) {
         float srcAspect = srcSize.x / srcSize.y;
         float dstAspect = dstSize.x / dstSize.y;
         vec2 outUv = uv;
         if (srcAspect > dstAspect) {
           float scale = dstAspect / srcAspect;
-          outUv.x = (uv.x - 0.5) / scale + 0.5;
+          outUv.x = (uv.x - 0.5) * scale + 0.5;
         } else {
           float scale = srcAspect / dstAspect;
-          outUv.y = (uv.y - 0.5) / scale + 0.5;
+          outUv.y = (uv.y - 0.5) * scale + 0.5;
         }
         return outUv;
       }
