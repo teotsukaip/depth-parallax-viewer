@@ -303,6 +303,14 @@
      * WebGL の texture2D と揃える: u 左→右、v は下が 0・上が 1（FLIP_Y 済みテクスチャ想定）
      * ImageData は上が行 0 なので内部で変換
      */
+    /** 深度マップ用: RGB の輝度（グレースケール PNG でも安定） */
+    function lumaAt(data, idx) {
+      const r = data[idx];
+      const g = data[idx + 1];
+      const b = data[idx + 2];
+      return (0.299 * r + 0.587 * g + 0.114 * b) / 255;
+    }
+
     function bilinearMono(data, w, h, u, vGl) {
       const uu = clamp(u, 0, 1);
       const vv = clamp(vGl, 0, 1);
@@ -319,10 +327,10 @@
       const i10 = (y0 * w + x1) * 4;
       const i01 = (y1 * w + x0) * 4;
       const i11 = (y1 * w + x1) * 4;
-      const d00 = data[i00] / 255;
-      const d10 = data[i10] / 255;
-      const d01 = data[i01] / 255;
-      const d11 = data[i11] / 255;
+      const d00 = lumaAt(data, i00);
+      const d10 = lumaAt(data, i10);
+      const d01 = lumaAt(data, i01);
+      const d11 = lumaAt(data, i11);
       const a = d00 * (1 - fx) + d10 * fx;
       const b = d01 * (1 - fx) + d11 * fx;
       return a * (1 - fy) + b * fy;
@@ -393,18 +401,23 @@
     }
 
     function rasterToBuffers(colorImg, depthSource, procW, procH) {
+      const natCW = colorImg.naturalWidth || colorImg.width;
+      const natCH = colorImg.naturalHeight || colorImg.height;
+      const natDW = depthSource.width || depthSource.naturalWidth;
+      const natDH = depthSource.height || depthSource.naturalHeight;
+
       const c = document.createElement('canvas');
       c.width = procW;
       c.height = procH;
       const cctx = c.getContext('2d', { willReadFrequently: true });
-      cctx.drawImage(colorImg, 0, 0, colorImg.naturalWidth || colorImg.width, colorImg.naturalHeight || colorImg.height, 0, 0, procW, procH);
+      cctx.drawImage(colorImg, 0, 0, natCW, natCH, 0, 0, procW, procH);
       const color = cctx.getImageData(0, 0, procW, procH).data;
 
       const d = document.createElement('canvas');
       d.width = procW;
       d.height = procH;
       const dctx = d.getContext('2d', { willReadFrequently: true });
-      dctx.drawImage(depthSource, 0, 0, procW, procH);
+      dctx.drawImage(depthSource, 0, 0, natDW, natDH, 0, 0, procW, procH);
       const depth = dctx.getImageData(0, 0, procW, procH).data;
 
       return { procW, procH, color, depth };
@@ -549,7 +562,8 @@
       const long = Math.max(cw, ch);
       const scale = Math.min(1, MAX_WORK_LONG / long);
       const workW = Math.max(1, Math.floor(cw * scale));
-      const workH = Math.max(1, Math.floor(ch * scale));
+      /** 横と縦を別々に floor すると cw:ch とずれ、WebGL の coverUv と深度の対応が崩れる */
+      const workH = Math.max(1, Math.round((workW * ch) / cw));
 
       if (workCanvas.width !== workW || workCanvas.height !== workH) {
         workCanvas.width = workW;
@@ -577,7 +591,7 @@
           const uvx = (vUvX - 0.5) / zoom + 0.5;
           const uvy = (vUvY - 0.5) / zoom + 0.5;
 
-          const fitted = coverUv(uvx, uvy, pw, ph, workW, workH);
+          const fitted = coverUv(uvx, uvy, pw, ph, cw, ch);
 
           let d = bilinearMono(depth, pw, ph, fitted.x, fitted.y);
           if (inv) d = 1 - d;
